@@ -1,0 +1,44 @@
+name: Create Standup Page
+
+on:
+  schedule:
+    # 21:07 UTC, Monday to Friday (22:07 in London during BST). Friday's run
+    # creates Monday's page. Off the hour to avoid GitHub's busiest slot.
+    - cron: '7 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only log the summary, without touching Notion'
+        type: boolean
+        default: false
+      activity_date:
+        description: 'Day of activity to summarise (YYYY-MM-DD). Defaults to today in London.'
+        type: string
+        required: false
+
+jobs:
+  create-standup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create standup page
+        run: npx tsx workflows/create-standup/index.ts
+        env:
+          PRIVATE_INTEGRATION_TOKEN: ${{ secrets.PRIVATE_INTEGRATION_TOKEN }}
+          STANDUPS_DATABASE_ID: ${{ secrets.STANDUPS_DATABASE_ID }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ADO_ORG: ${{ vars.ADO_ORG }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ACTIVITY_DATE: ${{ inputs.activity_date }}

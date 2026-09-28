@@ -12,6 +12,16 @@ Deletes checked-off to-do items from Notion shopping list pages and ensures ever
 npx tsx workflows/cleanup-shopping/index.ts
 ```
 
+### Create Standup
+
+Creates the next working day's page in a Notion "Standups" database from its template, then fills the "What have I done since yesterday" section with a Gemini summary of the day's Azure DevOps activity (state changes and comments you made). Only fills the section while it's still an empty placeholder, reuses the page if one already exists for that date, and only ever reads from Azure DevOps. Runs Monday to Friday evenings, so Friday's work goes on Monday's page.
+
+```sh
+npx tsx workflows/create-standup/index.ts
+# Log the summary without touching Notion, for a chosen day:
+DRY_RUN=true ACTIVITY_DATE=2026-09-24 npx tsx workflows/create-standup/index.ts
+```
+
 ### Events Calendar
 
 Generates recurring calendar events in a Notion "Events" database from templates defined in a "Repeat Events" database. Reads weekday, week ordinal, and excluded months from each template, then creates events for the next 12 months — skipping any that already exist.
@@ -81,6 +91,7 @@ npx tsx workflows/populate-walks-database/index.ts
 - **Runtime:** Node.js 22, TypeScript via [tsx](https://github.com/privatenumber/tsx)
 - **Notion:** [`@notionhq/client`](https://github.com/makenotion/notion-sdk-js)
 - **AI:** [`@google/genai`](https://github.com/googleapis/js-genai) (Gemini 2.5 Flash, JSON response mode)
+- **Work tracking:** [Azure DevOps REST API](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/) (read-only)
 - **Film APIs:** [TMDB](https://www.themoviedb.org/documentation/api), [OMDb](https://www.omdbapi.com/)
 - **CI:** GitHub Actions on nightly cron schedules (all workflows also support `workflow_dispatch`)
 
@@ -94,6 +105,7 @@ utils/
   parsing.ts     # Property builders for Notion API requests
 workflows/
   cleanup-shopping/       # Remove checked items from shopping lists
+  create-standup/         # Next standup page with Azure DevOps summary
   events-calendar/        # Generate recurring calendar events
   manage-meal-planner/    # Rolling 28-day meal planner
   manage-shopping/        # AI-powered shopping list management
@@ -135,11 +147,17 @@ workflows/
    WALKS_DATABASE_ID=...
    PUBS_DATABASE_ID=...
    PUBS_PAGE_ID=...
+   STANDUPS_DATABASE_ID=...
 
    # APIs
    GEMINI_API_KEY=...
    TMDB_API_KEY=...
    OMDB_API_KEY=...
+
+   # Azure DevOps (PAT scoped to Work Items: Read only)
+   ADO_ORG=...
+   ADO_PROJECT=...
+   ADO_PAT=...
 
    # Location
    HOME_LOCATION=...
