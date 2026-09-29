@@ -4,7 +4,7 @@ import { createAIClient, type AIClient } from "utils/ai";
 import { createNotionClient } from "utils/notion";
 import { logger } from "utils/logger";
 // Workflow
-import { SECTION_HEADING, TEMPLATE_WAIT } from "./config";
+import { SCHEDULED_RUN_LOOKBACK_HOURS, SECTION_HEADING, TEMPLATE_WAIT } from "./config";
 import { createAzureDevOpsClient } from "./azureDevOps";
 import { summarizeActivity } from "./summarize";
 import { fillSectionIfEmpty, findOrCreateStandupPage, getDataSourceId } from "./standupPage";
@@ -20,6 +20,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ACTIVITY_DATE = process.env.ACTIVITY_DATE || undefined;
 // Optional: print the summary without touching Notion.
 const DRY_RUN = process.env.DRY_RUN === "true";
+// Set by GitHub Actions: "schedule" for the nightly cron run.
+const IS_SCHEDULED_RUN = process.env.GITHUB_EVENT_NAME === "schedule";
 
 if (!PRIVATE_INTEGRATION_TOKEN) {
   logger.error("PRIVATE_INTEGRATION_TOKEN is not defined");
@@ -60,8 +62,16 @@ const notion = createNotionClient(PRIVATE_INTEGRATION_TOKEN);
 const ai: AIClient = await createAIClient();
 const azureDevOps = createAzureDevOpsClient({ org: ADO_ORG, project: ADO_PROJECT, pat: ADO_PAT });
 
+// Today, except for a scheduled run, which summarises the day it was due on
+// even if GitHub starts it after midnight. An evening run due at 21:07 that
+// starts at 01:54 still counts as the previous day.
+const defaultActivityDate = (): string => {
+  const lookbackMs = IS_SCHEDULED_RUN ? SCHEDULED_RUN_LOOKBACK_HOURS * 60 * 60 * 1000 : 0;
+  return toLocalIsoDate(new Date(Date.now() - lookbackMs));
+};
+
 const run = async (): Promise<void> => {
-  const activityDate = ACTIVITY_DATE ?? toLocalIsoDate(new Date());
+  const activityDate = ACTIVITY_DATE ?? defaultActivityDate();
   const standupDate = nextWorkingDay(activityDate);
   const [, month, day] = standupDate.split("-");
   const title = `Standup ${day}/${month}`;

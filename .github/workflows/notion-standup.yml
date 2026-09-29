@@ -3,7 +3,8 @@ name: Create Standup Page
 on:
   schedule:
     # 21:07 UTC, Monday to Friday (22:07 in London during BST). Friday's run
-    # creates Monday's page. Off the hour to avoid GitHub's busiest slot.
+    # creates Monday's page. GitHub often starts scheduled runs hours late,
+    # which the script allows for when working out which day to summarise.
     - cron: '7 21 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -38,7 +39,7 @@ jobs:
           STANDUPS_DATABASE_ID: ${{ secrets.STANDUPS_DATABASE_ID }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ADO_ORG: ${{ vars.ADO_ORG }}
-          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_ORG: ${{ secrets.ADO_ORG }}
+          ADO_PROJECT: ${{ secrets.ADO_PROJECT }}
           DRY_RUN: ${{ inputs.dry_run }}
           ACTIVITY_DATE: ${{ inputs.activity_date }}
