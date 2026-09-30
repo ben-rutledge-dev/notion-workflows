@@ -20,7 +20,7 @@ Filling a page adds, after anything already typed there by hand:
 
 - **What have I done:** a Gemini summary of the day's Azure DevOps activity (state changes and comments you made), as ticked to-dos, leaving out anything you've already written.
 - **To-do:** unticked to-dos carried over from the previous standup.
-- **Blockers:** the previous standup's blockers that are still open, plus new ones from tickets in the Blocked state or tagged Blocked and from your comments.
+- **Blockers:** the previous standup's blockers that are still open, plus new ones for your tickets in the current sprint that are in the Blocked state or tagged Blocked, and for things your comments show you're waiting on.
 
 A page's "Summary added" checkbox is ticked once it's filled, and ticked pages are skipped, so re-runs never add anything twice. Untick it to fill a page again. Azure DevOps is only ever read.
 

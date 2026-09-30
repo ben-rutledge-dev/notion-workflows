@@ -4,9 +4,9 @@
 // (Read) so Azure DevOps itself rejects any write.
 import { logger } from "utils/logger";
 import {
-  BLOCKED_RECENT_DAYS,
   BLOCKED_STATE,
   BLOCKED_TAG,
+  FINISHED_STATES,
   RECENT_COMMENTS_PER_ITEM,
 } from "./config";
 import { addDays, htmlToText, toLocalIsoDate } from "./utils";
@@ -69,9 +69,15 @@ const parseTags = (value: unknown): string[] =>
     ? value.split(";").map((t) => t.trim()).filter(Boolean)
     : [];
 
+const isFinished = (state: string): boolean =>
+  FINISHED_STATES.some((s) => s.toLowerCase() === state.toLowerCase());
+
+// Blocked by state or tag, and not finished: a closed task can keep its
+// Blocked tag, but it isn't blocking anything.
 const isBlocked = (state: string, tags: string[]): boolean =>
-  state.toLowerCase() === BLOCKED_STATE.toLowerCase() ||
-  tags.some((t) => t.toLowerCase() === BLOCKED_TAG.toLowerCase());
+  !isFinished(state) &&
+  (state.toLowerCase() === BLOCKED_STATE.toLowerCase() ||
+    tags.some((t) => t.toLowerCase() === BLOCKED_TAG.toLowerCase()));
 
 export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig) => {
   const authorization = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
@@ -243,18 +249,20 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
     return statuses;
   };
 
-  // Tickets that are blocked, by state or tag, and are mine: assigned to me,
-  // or changed by me and touched recently.
-  const getBlockedItems = async (activityDate: string): Promise<TicketStatus[]> => {
-    const blocked = `([System.State] = '${BLOCKED_STATE}' OR [System.Tags] CONTAINS '${BLOCKED_TAG}')`;
-    const since = addDays(activityDate, -BLOCKED_RECENT_DAYS);
-    const [assigned, changed] = await Promise.all([
-      queryIds(`${blocked} AND [System.AssignedTo] = @Me`),
-      queryIds(`${blocked} AND [System.ChangedDate] >= '${since}' AND EVER [System.ChangedBy] = @Me`),
-    ]);
-    const statuses = await getTicketStatuses([...assigned, ...changed]);
+  // Blocked tickets, by state or tag, that are assigned to me and in the
+  // current sprint (as set for the project's default team). Items moved to
+  // another sprint drop out.
+  const getBlockedItems = async (): Promise<TicketStatus[]> => {
+    const finished = FINISHED_STATES.map((s) => `'${s}'`).join(", ");
+    const ids = await queryIds(
+      `([System.State] = '${BLOCKED_STATE}' OR [System.Tags] CONTAINS '${BLOCKED_TAG}') ` +
+        "AND [System.AssignedTo] = @Me " +
+        "AND [System.IterationPath] = @CurrentIteration " +
+        `AND [System.State] NOT IN (${finished})`
+    );
+    const statuses = await getTicketStatuses(ids);
     const items = [...statuses.values()].filter((s) => s.blocked);
-    logger.info(`${items.length} of your work item(s) are currently blocked`);
+    logger.info(`${items.length} of your work item(s) in the current sprint are blocked`);
     return items;
   };
 

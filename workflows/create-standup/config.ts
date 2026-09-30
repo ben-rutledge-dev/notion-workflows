@@ -18,11 +18,11 @@ export const SUMMARY_ADDED_PROPERTY = "Summary added";
 export const AI_MODEL = "gemini-2.5-flash";
 
 // A work item counts as blocked if it's in this state or has this tag.
+// Only your own items in the current sprint count, and finished items are
+// ignored even if they still carry the tag.
 export const BLOCKED_STATE = "Blocked";
 export const BLOCKED_TAG = "Blocked";
-// Blocked items count as yours if they're assigned to you, or if you've
-// changed them and they've been touched within this many days.
-export const BLOCKED_RECENT_DAYS = 14;
+export const FINISHED_STATES = ["Closed", "Done", "Removed"];
 // How many of a ticket's latest comments are shown to the AI.
 export const RECENT_COMMENTS_PER_ITEM = 3;
 

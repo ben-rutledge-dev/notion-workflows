@@ -160,7 +160,7 @@ const fillStandupPage = async (
   let stepError: Error | undefined;
   try {
     const activity = await azureDevOps.getActivity(activityDate);
-    const blockedItems = await azureDevOps.getBlockedItems(activityDate);
+    const blockedItems = await azureDevOps.getBlockedItems();
     const tickets = new Map<number, TicketStatus>(blockedItems.map((t) => [t.id, t]));
     const referenced = previousBlockers.lines.flatMap((l) => ticketIds(l.text)).filter((id) => !tickets.has(id));
     for (const [id, status] of await azureDevOps.getTicketStatuses(referenced)) tickets.set(id, status);
