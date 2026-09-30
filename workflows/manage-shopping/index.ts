@@ -363,12 +363,14 @@ const populateHelperDatabase = async (
         // User manages inventory status manually
         logger.info("Skipping staple ingredient", { ingredient });
       } else if (existingItem.processingStatus === "Processed") {
-        // Check if it should be reset to New based on last processed date
+        // Check if it should be reset to New based on last processed date.
+        // No date means it was never processed by hand (for example, it
+        // expired unused), so it's due for a reset.
         const lastProcessedDate = existingItem.lastProcessed
           ? new Date(existingItem.lastProcessed)
-          : new Date(existingItem.createdTime);
+          : null;
 
-        const isOlderThan7Days = lastProcessedDate < sevenDaysAgo;
+        const isOlderThan7Days = !lastProcessedDate || lastProcessedDate < sevenDaysAgo;
 
         if (isOlderThan7Days) {
           // Reset to New and update meal relation
@@ -386,7 +388,7 @@ const populateHelperDatabase = async (
           logger.info("Reset processed ingredient to New (>7 days old)", {
             ingredient,
             meal: meal.name,
-            lastProcessed: lastProcessedDate.toISOString()
+            lastProcessed: lastProcessedDate?.toISOString() ?? "never"
           });
         } else {
           // Keep as Processed, just update meal relation
@@ -742,10 +744,17 @@ const run = async () => {
   const now = new Date().toISOString();
   let processedCount = 0;
   let stapleCount = 0;
+  let expiredCount = 0;
+
+  // Ingredients needed by a meal in the next 7 days
+  const neededIngredients = new Set(
+    upcomingMeals.flatMap((meal) => meal.ingredients.map((i) => i.toLowerCase()))
+  );
 
   for (const item of updatedHelperItems) {
     const updates: any = {};
     let shouldUpdate = false;
+    const addedToList = item.addToShoppingList || item.addToTurkishList || item.addToAsianList;
 
     // Handle "Delete" checkbox
     if (item.delete) {
@@ -756,8 +765,18 @@ const run = async () => {
       processedCount++;
       logger.info("Marked ingredient as processed (Delete)", { ingredient: item.item });
     }
+    // Staples added to a list keep their Staple status
+    else if (addedToList && item.processingStatus === "Staple") {
+      updates["Add to shopping list"] = { checkbox: false };
+      updates["Add to Turkish supermarket shopping list"] = { checkbox: false };
+      updates["Add to Asian supermarket shopping list"] = { checkbox: false };
+      updates["Last processed"] = { date: { start: now } };
+      shouldUpdate = true;
+      stapleCount++;
+      logger.info("Kept staple after adding to list", { ingredient: item.item });
+    }
     // Handle shopping list checkboxes
-    else if (item.addToShoppingList || item.addToTurkishList || item.addToAsianList) {
+    else if (addedToList) {
       updates["Processing status"] = { status: { name: "Processed" } };
       updates["Add to shopping list"] = { checkbox: false };
       updates["Add to Turkish supermarket shopping list"] = { checkbox: false };
@@ -766,6 +785,14 @@ const run = async () => {
       shouldUpdate = true;
       processedCount++;
       logger.info("Marked ingredient as processed (added to list)", { ingredient: item.item });
+    }
+    // Expire suggestions no meal in the next 7 days needs. "Last processed"
+    // is left alone, so the item comes back as New next time a meal needs it.
+    else if (item.processingStatus === "New" && !neededIngredients.has(item.item.toLowerCase())) {
+      updates["Processing status"] = { status: { name: "Processed" } };
+      shouldUpdate = true;
+      expiredCount++;
+      logger.info("Expired unused suggestion (no meal in the next 7 days)", { ingredient: item.item });
     }
 
     if (shouldUpdate) {
@@ -780,6 +807,7 @@ const run = async () => {
     totalAdded,
     processed: processedCount,
     staples: stapleCount,
+    expired: expiredCount,
   });
 };
 
