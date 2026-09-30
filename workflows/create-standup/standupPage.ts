@@ -3,9 +3,42 @@ import type { BlockObjectResponse, PageObjectResponse } from "@notionhq/client/b
 // Utils
 import { getAllBlocks } from "utils/notion";
 import { logger } from "utils/logger";
+// Config
+import { SUMMARY_ADDED_PROPERTY } from "./config";
 
 type Block = BlockObjectResponse;
-type ListItemType = "bulleted_list_item" | "numbered_list_item" | "to_do";
+export type ListItemType = "bulleted_list_item" | "numbered_list_item" | "to_do";
+
+export interface RichText {
+  type: "text";
+  text: { content: string; link?: { url: string } | null };
+  annotations?: Record<string, unknown>;
+}
+
+// One line in a section: its plain text, its formatting for copying
+// elsewhere, and whether it's ticked (to-dos only).
+export interface SectionLine {
+  block: Block;
+  text: string;
+  richText: RichText[];
+  checked: boolean | null;
+}
+
+export interface Section {
+  // Lines with something typed in them, in page order.
+  lines: SectionLine[];
+  // Empty placeholder lines, tidied away once items are added.
+  blanks: Block[];
+  parentId: string;
+  // New items go after this block, or at the start of a toggle heading.
+  insertAfterId: string | null;
+}
+
+export interface NewItem {
+  type: ListItemType;
+  richText: RichText[];
+  checked?: boolean;
+}
 
 interface Template {
   id: string;
@@ -20,26 +53,39 @@ interface HeadingLocation {
   index: number;
 }
 
-interface WaitOptions {
+export interface WaitOptions {
   retries: number;
   delayMs: number;
 }
 
-export type FillResult = "filled" | "not-empty";
-
 const HEADING_TYPES = new Set(["heading_1", "heading_2", "heading_3"]);
-const LIST_ITEM_TYPES = new Set<string>(["bulleted_list_item", "numbered_list_item", "to_do"]);
-const TEXT_BLOCK_TYPES = new Set<string>([...LIST_ITEM_TYPES, "paragraph"]);
+const TEXT_BLOCK_TYPES = new Set<string>(["bulleted_list_item", "numbered_list_item", "to_do", "paragraph"]);
 // Blocks whose children are separate pages or databases, not page layout.
 const OPAQUE_TYPES = new Set(["child_page", "child_database"]);
 const MAX_SEARCH_DEPTH = 3;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const blockText = (block: Block): string => {
-  const content = (block as unknown as Record<string, { rich_text?: Array<{ plain_text: string }> }>)[block.type];
-  return (content?.rich_text ?? []).map((t) => t.plain_text).join("");
+type ResponseRichText = { plain_text: string; href: string | null; annotations?: Record<string, unknown> };
+
+const responseRichText = (block: Block): ResponseRichText[] => {
+  const content = (block as unknown as Record<string, { rich_text?: ResponseRichText[] }>)[block.type];
+  return content?.rich_text ?? [];
 };
+
+const blockText = (block: Block): string =>
+  responseRichText(block).map((t) => t.plain_text).join("");
+
+// Copies a block's text and formatting. Mentions and equations become plain
+// text, since they can't be recreated exactly.
+const copyRichText = (block: Block): RichText[] =>
+  responseRichText(block).map((t) => ({
+    type: "text",
+    text: { content: t.plain_text, link: t.href ? { url: t.href } : null },
+    ...(t.annotations ? { annotations: t.annotations } : {}),
+  }));
+
+export const textToRichText = (text: string): RichText[] => [{ type: "text", text: { content: text } }];
 
 const isHeading = (block: Block): boolean => HEADING_TYPES.has(block.type);
 
@@ -56,15 +102,14 @@ const isBlank = (block: Block): boolean =>
 const getFullBlocks = async (notion: Client, parentId: string): Promise<Block[]> =>
   (await getAllBlocks(notion, parentId)).filter(isFullBlock);
 
-const buildItem = (type: ListItemType, text: string) => {
-  const rich_text = [{ type: "text" as const, text: { content: text } }];
-  if (type === "to_do") return { type, to_do: { rich_text, checked: false } };
-  if (type === "numbered_list_item") return { type, numbered_list_item: { rich_text } };
-  return { type, bulleted_list_item: { rich_text } };
+const buildItem = ({ type, richText, checked }: NewItem) => {
+  if (type === "to_do") return { type, to_do: { rich_text: richText, checked: checked ?? false } };
+  if (type === "numbered_list_item") return { type, numbered_list_item: { rich_text: richText } };
+  return { type, bulleted_list_item: { rich_text: richText } };
 };
 
 // ---------------------------------------------------------------------------
-// Finding or creating the page
+// Finding or creating pages
 // ---------------------------------------------------------------------------
 
 // Newer Notion API calls address a database's data source rather than the
@@ -94,6 +139,22 @@ export const findPagesByDate = async (
   return response.results.filter(isFullPage);
 };
 
+// The most recent standup dated on or before isoDate, so a missing day
+// (holiday, sick day) falls back to the last standup before it.
+export const findLatestPageOnOrBefore = async (
+  notion: Client,
+  dataSourceId: string,
+  isoDate: string
+): Promise<PageObjectResponse | undefined> => {
+  const response = await notion.dataSources.query({
+    data_source_id: dataSourceId,
+    filter: { property: "Date", date: { on_or_before: isoDate } },
+    sorts: [{ property: "Date", direction: "descending" }],
+    page_size: 1,
+  });
+  return response.results.filter(isFullPage)[0];
+};
+
 // Uses the data source's default template, or its only template if none is
 // marked as the default.
 const getTemplateId = async (notion: Client, dataSourceId: string): Promise<string> => {
@@ -108,7 +169,6 @@ const getTemplateId = async (notion: Client, dataSourceId: string): Promise<stri
       `Can't pick a template for new standup pages. Mark one as the default in Notion. Templates found: ${names}`
     );
   }
-  logger.info(`Using template "${chosen.name}"`);
   return chosen.id;
 };
 
@@ -154,7 +214,26 @@ export const findOrCreateStandupPage = async (
 };
 
 // ---------------------------------------------------------------------------
-// Filling the section
+// The "Summary added" checkbox
+// ---------------------------------------------------------------------------
+
+export const isSummaryAdded = (page: PageObjectResponse): boolean => {
+  const property = page.properties[SUMMARY_ADDED_PROPERTY];
+  if (!property) {
+    throw new Error(`The Standups database has no "${SUMMARY_ADDED_PROPERTY}" checkbox property`);
+  }
+  return property.type === "checkbox" && property.checkbox;
+};
+
+export const markSummaryAdded = async (notion: Client, pageId: string): Promise<void> => {
+  await notion.pages.update({
+    page_id: pageId,
+    properties: { [SUMMARY_ADDED_PROPERTY]: { checkbox: true } },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// Reading and adding to sections
 // ---------------------------------------------------------------------------
 
 // Depth-first search for the first heading containing headingText, looking
@@ -165,8 +244,9 @@ const findHeading = async (
   headingText: string,
   depth = 0
 ): Promise<HeadingLocation | null> => {
+  const wanted = headingText.toLowerCase();
   const blocks = await getFullBlocks(notion, parentId);
-  const index = blocks.findIndex((b) => isHeading(b) && blockText(b).includes(headingText));
+  const index = blocks.findIndex((b) => isHeading(b) && blockText(b).toLowerCase().includes(wanted));
   if (index !== -1) return { heading: blocks[index], parentId, siblings: blocks, index };
 
   if (depth >= MAX_SEARCH_DEPTH) return null;
@@ -178,81 +258,73 @@ const findHeading = async (
   return null;
 };
 
-const waitForHeading = async (
+// Reads the section under a heading: a plain heading followed by blocks up
+// to the next heading, or a toggle heading with the blocks nested inside.
+// Returns null if the heading never appears. A new page's template lands
+// asynchronously, so `wait` allows for polling.
+export const readSection = async (
   notion: Client,
   pageId: string,
   headingText: string,
   { retries, delayMs }: WaitOptions
-): Promise<HeadingLocation> => {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const found = await findHeading(notion, pageId, headingText);
-    if (found) return found;
-    if (attempt < retries) await sleep(delayMs);
+): Promise<Section | null> => {
+  let location: HeadingLocation | null = null;
+  for (let attempt = 1; attempt <= retries && !location; attempt++) {
+    location = await findHeading(notion, pageId, headingText);
+    if (!location && attempt < retries) await sleep(delayMs);
   }
-  throw new Error(`Heading containing "${headingText}" not found on the page`);
-};
+  if (!location) return null;
 
-const appendItems = async (
-  notion: Client,
-  parentId: string,
-  afterBlockId: string | null,
-  type: ListItemType,
-  texts: string[]
-): Promise<void> => {
-  if (texts.length === 0) return;
-  // The SDK's typed append predates the position parameter, which replaces
-  // the deprecated "after" parameter.
-  await notion.request({
-    path: `blocks/${parentId}/children`,
-    method: "patch",
-    body: {
-      children: texts.map((text) => buildItem(type, text)),
-      position: afterBlockId
-        ? { type: "after_block", after_block: { id: afterBlockId } }
-        : { type: "start" },
-    },
-  });
-};
-
-// Writes bullets under the heading, but only if that section holds nothing
-// but empty placeholders. Works with a plain heading followed by blocks, or
-// a toggle heading with the blocks nested inside it. New items copy the
-// placeholder's block type, so a to-do placeholder gets to-do items.
-export const fillSectionIfEmpty = async (
-  notion: Client,
-  pageId: string,
-  headingText: string,
-  bullets: string[],
-  wait: WaitOptions
-): Promise<FillResult> => {
-  const { heading, parentId, siblings, index } = await waitForHeading(notion, pageId, headingText, wait);
-
-  let section: Block[];
-  let insertParentId: string;
-  let insertAfterId: string | null;
+  const { heading, parentId, siblings, index } = location;
+  let blocks: Block[];
+  let sectionParentId: string;
+  let startAnchor: string | null;
   if (isToggleableHeading(heading)) {
-    section = heading.has_children ? await getFullBlocks(notion, heading.id) : [];
-    insertParentId = heading.id;
-    insertAfterId = null;
+    blocks = heading.has_children ? await getFullBlocks(notion, heading.id) : [];
+    sectionParentId = heading.id;
+    startAnchor = null;
   } else {
     const rest = siblings.slice(index + 1);
     const nextHeading = rest.findIndex(isHeading);
-    section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-    insertParentId = parentId;
-    insertAfterId = heading.id;
+    blocks = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+    sectionParentId = parentId;
+    startAnchor = heading.id;
   }
 
-  if (!section.every(isBlank)) return "not-empty";
+  const filled = blocks.filter((b) => !isBlank(b));
+  return {
+    lines: filled
+      .filter((b) => TEXT_BLOCK_TYPES.has(b.type))
+      .map((block) => ({
+        block,
+        text: blockText(block).trim(),
+        richText: copyRichText(block),
+        checked: block.type === "to_do" ? block.to_do.checked : null,
+      }))
+      .filter((line) => line.text !== ""),
+    blanks: blocks.filter(isBlank),
+    parentId: sectionParentId,
+    insertAfterId: filled.length > 0 ? filled[filled.length - 1].id : startAnchor,
+  };
+};
 
-  const placeholder = section[0];
-  if (placeholder && LIST_ITEM_TYPES.has(placeholder.type)) {
-    const type = placeholder.type as ListItemType;
-    const [first, ...rest] = bullets;
-    const updated = buildItem(type, first);
-    await notion.blocks.update({ block_id: placeholder.id, ...updated } as Parameters<Client["blocks"]["update"]>[0]);
-    await appendItems(notion, insertParentId, placeholder.id, type, rest);
-  } else {
-    await appendItems(notion, insertParentId, insertAfterId, "bulleted_list_item", bullets);
+// Adds items after the last thing already in the section, so anything typed
+// by hand stays first, then deletes the section's empty placeholder lines.
+export const appendToSection = async (notion: Client, section: Section, items: NewItem[]): Promise<void> => {
+  if (items.length === 0) return;
+  // The SDK's typed append predates the position parameter, which replaces
+  // the deprecated "after" parameter.
+  await notion.request({
+    path: `blocks/${section.parentId}/children`,
+    method: "patch",
+    body: {
+      children: items.map(buildItem),
+      position: section.insertAfterId
+        ? { type: "after_block", after_block: { id: section.insertAfterId } }
+        : { type: "start" },
+    },
+  });
+  for (const blank of section.blanks) {
+    await notion.blocks.delete({ block_id: blank.id });
   }
-  return "filled";
 };

@@ -1,8 +1,14 @@
-// Reads the PAT owner's Azure DevOps activity for one day. This module is
-// strictly read-only: every request is a GET, apart from the WIQL query,
-// which is a POST that only runs a search. The PAT should also be scoped to
-// Work Items (Read) so Azure DevOps itself rejects any write.
+// Reads the PAT owner's Azure DevOps activity. This module is strictly
+// read-only: every request is a GET, apart from WIQL queries, which are
+// POSTs that only run a search. The PAT should also be scoped to Work Items
+// (Read) so Azure DevOps itself rejects any write.
 import { logger } from "utils/logger";
+import {
+  BLOCKED_RECENT_DAYS,
+  BLOCKED_STATE,
+  BLOCKED_TAG,
+  RECENT_COMMENTS_PER_ITEM,
+} from "./config";
 import { addDays, htmlToText, toLocalIsoDate } from "./utils";
 
 export interface StateChange {
@@ -19,6 +25,17 @@ export interface WorkItemActivity {
   comments: string[];
 }
 
+// A ticket's current status, with its latest comments from anyone.
+export interface TicketStatus {
+  id: number;
+  title: string;
+  type: string;
+  state: string;
+  tags: string[];
+  blocked: boolean;
+  recentComments: string[];
+}
+
 interface AzureDevOpsConfig {
   org: string;
   project: string;
@@ -32,7 +49,7 @@ interface FieldChange {
 
 interface WorkItemUpdate {
   id: number;
-  revisedBy?: { id?: string };
+  revisedBy?: { id?: string; displayName?: string };
   fields?: Record<string, FieldChange>;
 }
 
@@ -45,6 +62,16 @@ const API_VERSION = "7.1";
 const MAX_IDS_PER_REQUEST = 200;
 const UPDATES_PAGE_SIZE = 200;
 const WIQL_PATH = "/_apis/wit/wiql";
+const FIELDS = "System.Title,System.WorkItemType,System.State,System.Tags";
+
+const parseTags = (value: unknown): string[] =>
+  typeof value === "string"
+    ? value.split(";").map((t) => t.trim()).filter(Boolean)
+    : [];
+
+const isBlocked = (state: string, tags: string[]): boolean =>
+  state.toLowerCase() === BLOCKED_STATE.toLowerCase() ||
+  tags.some((t) => t.toLowerCase() === BLOCKED_TAG.toLowerCase());
 
 export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig) => {
   const authorization = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
@@ -84,19 +111,10 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
     return id;
   };
 
-  // Items changed since the day before (slack for Azure DevOps' own timezone
-  // handling) that I have changed at some point. The exact per-update
-  // filtering happens afterwards.
-  const getCandidateIds = async (activityDate: string): Promise<number[]> => {
-    const since = addDays(activityDate, -1);
-    const query =
-      "SELECT [System.Id] FROM WorkItems " +
-      "WHERE [System.TeamProject] = @project " +
-      `AND [System.ChangedDate] >= '${since}' ` +
-      "AND EVER [System.ChangedBy] = @Me";
+  const queryIds = async (where: string): Promise<number[]> => {
     const data = await request<{ workItems?: Array<{ id: number }> }>(
       `/${encodeURIComponent(project)}${WIQL_PATH}?api-version=${API_VERSION}`,
-      { query }
+      { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND ${where}` }
     );
     return (data.workItems ?? []).map((w) => w.id);
   };
@@ -106,9 +124,7 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
     for (let i = 0; i < ids.length; i += MAX_IDS_PER_REQUEST) {
       const chunk = ids.slice(i, i + MAX_IDS_PER_REQUEST);
       const data = await request<{ value: Array<WorkItem | null> }>(
-        `/_apis/wit/workitems?ids=${chunk.join(",")}` +
-          "&fields=System.Title,System.WorkItemType,System.State" +
-          `&errorPolicy=omit&api-version=${API_VERSION}`
+        `/_apis/wit/workitems?ids=${chunk.join(",")}&fields=${FIELDS}&errorPolicy=omit&api-version=${API_VERSION}`
       );
       for (const item of data.value) if (item) items.set(item.id, item);
     }
@@ -131,7 +147,11 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
   // Items with no such activity are left out.
   const getActivity = async (activityDate: string): Promise<WorkItemActivity[]> => {
     const myId = await getMyId();
-    const ids = await getCandidateIds(activityDate);
+    // Changed since the day before (slack for Azure DevOps' own timezone
+    // handling) and changed by me at some point. Exact filtering is below.
+    const ids = await queryIds(
+      `[System.ChangedDate] >= '${addDays(activityDate, -1)}' AND EVER [System.ChangedBy] = @Me`
+    );
     logger.info(`Azure DevOps returned ${ids.length} candidate work item(s)`);
     const items = await getWorkItems(ids);
 
@@ -189,5 +209,54 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
     return activity;
   };
 
-  return { getActivity };
+  // Current status and latest comments for each ticket. IDs that don't
+  // exist or can't be read are left out.
+  const getTicketStatuses = async (ids: number[]): Promise<Map<number, TicketStatus>> => {
+    const statuses = new Map<number, TicketStatus>();
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return statuses;
+
+    const items = await getWorkItems(unique);
+    for (const id of unique) {
+      const item = items.get(id);
+      if (!item) continue;
+      const state = String(item.fields["System.State"] ?? "");
+      const tags = parseTags(item.fields["System.Tags"]);
+      const recentComments = (await getUpdates(id))
+        .flatMap((u) => {
+          const history = u.fields?.["System.History"]?.newValue;
+          if (typeof history !== "string") return [];
+          const text = htmlToText(history);
+          return text ? [`${u.revisedBy?.displayName ?? "Someone"}: ${text}`] : [];
+        })
+        .slice(-RECENT_COMMENTS_PER_ITEM);
+      statuses.set(id, {
+        id,
+        title: String(item.fields["System.Title"] ?? ""),
+        type: String(item.fields["System.WorkItemType"] ?? ""),
+        state,
+        tags,
+        blocked: isBlocked(state, tags),
+        recentComments,
+      });
+    }
+    return statuses;
+  };
+
+  // Tickets that are blocked, by state or tag, and are mine: assigned to me,
+  // or changed by me and touched recently.
+  const getBlockedItems = async (activityDate: string): Promise<TicketStatus[]> => {
+    const blocked = `([System.State] = '${BLOCKED_STATE}' OR [System.Tags] CONTAINS '${BLOCKED_TAG}')`;
+    const since = addDays(activityDate, -BLOCKED_RECENT_DAYS);
+    const [assigned, changed] = await Promise.all([
+      queryIds(`${blocked} AND [System.AssignedTo] = @Me`),
+      queryIds(`${blocked} AND [System.ChangedDate] >= '${since}' AND EVER [System.ChangedBy] = @Me`),
+    ]);
+    const statuses = await getTicketStatuses([...assigned, ...changed]);
+    const items = [...statuses.values()].filter((s) => s.blocked);
+    logger.info(`${items.length} of your work item(s) are currently blocked`);
+    return items;
+  };
+
+  return { getActivity, getBlockedItems, getTicketStatuses };
 };

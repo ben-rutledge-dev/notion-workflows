@@ -14,11 +14,19 @@ npx tsx workflows/cleanup-shopping/index.ts
 
 ### Create Standup
 
-Creates the next working day's page in a Notion "Standups" database from its template, then fills the "What have I done since yesterday" section with a Gemini summary of the day's Azure DevOps activity (state changes and comments you made). Only fills the section while it's still an empty placeholder, reuses the page if one already exists for that date, and only ever reads from Azure DevOps. Runs Monday to Friday evenings, so Friday's work goes on Monday's page.
+Keeps a Notion "Standups" database one working day ahead. Each weekday evening it fills the next working day's page and creates a clean page for the day after, so there's always a page ready to add to during the day. Friday's run fills Monday's page and creates Tuesday's.
+
+Filling a page adds, after anything already typed there by hand:
+
+- **What have I done:** a Gemini summary of the day's Azure DevOps activity (state changes and comments you made), as ticked to-dos, leaving out anything you've already written.
+- **To-do:** unticked to-dos carried over from the previous standup.
+- **Blockers:** the previous standup's blockers that are still open, plus new ones from tickets in the Blocked state or tagged Blocked and from your comments.
+
+A page's "Summary added" checkbox is ticked once it's filled, and ticked pages are skipped, so re-runs never add anything twice. Untick it to fill a page again. Azure DevOps is only ever read.
 
 ```sh
 npx tsx workflows/create-standup/index.ts
-# Log the summary without touching Notion, for a chosen day:
+# Log what would be added without writing to Notion, for a chosen day:
 DRY_RUN=true ACTIVITY_DATE=2026-09-24 npx tsx workflows/create-standup/index.ts
 ```
 

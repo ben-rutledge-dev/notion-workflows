@@ -57,3 +57,8 @@ export const htmlToText = (html: string): string =>
     .replace(/&amp;/g, "&")
     .replace(/\n{2,}/g, "\n")
     .trim();
+
+// Compares lines loosely, so small differences in case, spacing or a
+// trailing full stop don't count as different items.
+export const normalizeLine = (line: string): string =>
+  line.toLowerCase().replace(/\s+/g, " ").replace(/[.!\s]+$/, "").trim();
