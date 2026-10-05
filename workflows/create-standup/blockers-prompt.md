@@ -10,7 +10,7 @@ There are two jobs.
    - Don't suggest anything already covered by "Current blockers" or by an earlier blocker you're keeping open.
 
 Rules:
-- Each new blocker is one short line of plain text that names the ticket, for example "#1234".
+- Each new blocker is one short line of plain text that names the ticket by number only, for example "#1234". Never include the ticket's title, because it's added automatically after the number.
 - Be concise, because this is read out loud in a standup.
 - Only use what appears below.
 

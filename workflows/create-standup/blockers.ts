@@ -89,7 +89,7 @@ export const planBlockers = async (ai: AIClient, inputs: BlockerInputs): Promise
   for (const item of blockedItems) {
     if (!ticketIds(allText).includes(item.id)) {
       const how = item.state.toLowerCase() === BLOCKED_STATE.toLowerCase() ? "is blocked" : "is tagged Blocked";
-      added.push(`#${item.id} "${item.title}" ${how}`);
+      added.push(`#${item.id} ${how}`);
     }
   }
 

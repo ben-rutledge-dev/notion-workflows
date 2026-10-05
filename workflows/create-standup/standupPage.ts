@@ -87,6 +87,63 @@ const copyRichText = (block: Block): RichText[] =>
 
 export const textToRichText = (text: string): RichText[] => [{ type: "text", text: { content: text } }];
 
+export interface TicketLink {
+  title?: string;
+  url: string;
+}
+
+// Length of the ticket title if it's already written straight after the
+// ticket number, plain or in quotes or brackets, so it isn't repeated.
+const repeatedTitleLength = (after: string, title?: string): number => {
+  if (!title) return 0;
+  const lowerAfter = after.toLowerCase();
+  const lowerTitle = title.toLowerCase();
+  for (const [open, close] of [["", ""], ['"', '"'], ["'", "'"], ["(", ")"], ["“", "”"]]) {
+    for (const lead of [" ", ": ", " - "]) {
+      const written = `${lead}${open}${lowerTitle}${close}`;
+      if (lowerAfter.startsWith(written)) return written.length;
+    }
+  }
+  return 0;
+};
+
+// Turns each "#1234" in a line into a link reading "#1234 Title". Tickets
+// with no link info are left as plain text.
+export const textWithTicketLinks = (
+  text: string,
+  linkFor: (id: number) => TicketLink | undefined
+): RichText[] => {
+  const parts: RichText[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/#(\d+)/g)) {
+    const link = linkFor(Number(match[1]));
+    if (!link) continue;
+    const start = match.index ?? 0;
+    if (start > last) parts.push({ type: "text", text: { content: text.slice(last, start) } });
+    const label = link.title ? `${match[0]} ${link.title}` : match[0];
+    parts.push({ type: "text", text: { content: label, link: { url: link.url } } });
+    last = start + match[0].length + repeatedTitleLength(text.slice(start + match[0].length), link.title);
+  }
+  if (last < text.length) parts.push({ type: "text", text: { content: text.slice(last) } });
+  return parts.length > 0 ? parts : textToRichText(text);
+};
+
+// Applies textWithTicketLinks to existing rich text, such as a line carried
+// over from an earlier standup. Text that's already a link is left alone,
+// and bold, italics and other formatting are kept.
+export const linkTicketsInRichText = (
+  richText: RichText[],
+  linkFor: (id: number) => TicketLink | undefined
+): RichText[] =>
+  richText.flatMap((part) =>
+    part.text.link
+      ? [part]
+      : textWithTicketLinks(part.text.content, linkFor).map((piece) => ({
+          ...piece,
+          ...(part.annotations ? { annotations: part.annotations } : {}),
+        }))
+  );
+
 const isHeading = (block: Block): boolean => HEADING_TYPES.has(block.type);
 
 const isToggleableHeading = (block: Block): boolean =>

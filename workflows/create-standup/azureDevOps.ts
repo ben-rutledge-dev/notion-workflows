@@ -266,5 +266,15 @@ export const createAzureDevOpsClient = ({ org, project, pat }: AzureDevOpsConfig
     return items;
   };
 
-  return { getActivity, getBlockedItems, getTicketStatuses };
+  // Titles for tickets mentioned in generated lines but not already fetched.
+  const getTitles = async (ids: number[]): Promise<Map<number, string>> => {
+    const items = await getWorkItems([...new Set(ids)]);
+    return new Map([...items].map(([id, item]) => [id, String(item.fields["System.Title"] ?? "")]));
+  };
+
+  // The ticket's page in the Azure DevOps web app.
+  const workItemUrl = (id: number): string =>
+    `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_workitems/edit/${id}`;
+
+  return { getActivity, getBlockedItems, getTicketStatuses, getTitles, workItemUrl };
 };

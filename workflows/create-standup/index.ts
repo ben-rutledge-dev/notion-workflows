@@ -18,7 +18,8 @@ import {
   isSummaryAdded,
   markSummaryAdded,
   readSection,
-  textToRichText,
+  linkTicketsInRichText,
+  textWithTicketLinks,
   type NewItem,
   type Section,
   type WaitOptions,
@@ -103,7 +104,8 @@ const logPlanned = (heading: string, items: NewItem[]): void => {
   logger.info(`"${heading}": ${items.length} item(s) to add`);
   for (const item of items) {
     const box = item.type === "to_do" ? (item.checked ? "[x] " : "[ ] ") : "- ";
-    logger.info(`    ${box}${item.richText.map((t) => t.text.content).join("")}`);
+    const text = item.richText.map((t) => (t.text.link ? `[${t.text.content}]` : t.text.content)).join("");
+    logger.info(`    ${box}${text}`);
   }
 };
 
@@ -166,7 +168,6 @@ const fillStandupPage = async (
     for (const [id, status] of await azureDevOps.getTicketStatuses(referenced)) tickets.set(id, status);
 
     const bullets = await summarizeActivity(ai, activity, target.done.lines.map((l) => l.text));
-    doneItems = bullets.map((text) => ({ type: "to_do", richText: textToRichText(text), checked: true }));
 
     const plan = await planBlockers(ai, {
       previous: previousBlockers.lines.map((l) => l.text),
@@ -175,9 +176,32 @@ const fillStandupPage = async (
       tickets,
       activity,
     });
+
+    // Link every ticket number in the new lines as "#1234 Title".
+    const titles = new Map<number, string>([
+      ...activity.map((a): [number, string] => [a.id, a.title]),
+      ...[...tickets.values()].map((t): [number, string] => [t.id, t.title]),
+    ]);
+    const carriedTodoText = todoItems.map((item) => item.richText.map((t) => t.text.content).join(""));
+    const missing = [...bullets, ...plan.added, ...carriedTodoText]
+      .flatMap(ticketIds)
+      .filter((id) => !titles.has(id));
+    if (missing.length > 0) {
+      for (const [id, title] of await azureDevOps.getTitles(missing)) titles.set(id, title);
+    }
+    // Ticket numbers that don't exist in Azure DevOps stay as plain text.
+    const linkFor = (id: number) =>
+      titles.has(id) ? { title: titles.get(id), url: azureDevOps.workItemUrl(id) } : undefined;
+    const linked = (text: string) => textWithTicketLinks(text, linkFor);
+    for (const item of todoItems) item.richText = linkTicketsInRichText(item.richText, linkFor);
+
+    doneItems = bullets.map((text) => ({ type: "to_do", richText: linked(text), checked: true }));
     blockerItems = [
-      ...plan.carried.map((i): NewItem => ({ type: "bulleted_list_item", richText: previousBlockers.lines[i].richText })),
-      ...plan.added.map((text): NewItem => ({ type: "bulleted_list_item", richText: textToRichText(text) })),
+      ...plan.carried.map((i): NewItem => ({
+        type: "bulleted_list_item",
+        richText: linkTicketsInRichText(previousBlockers.lines[i].richText, linkFor),
+      })),
+      ...plan.added.map((text): NewItem => ({ type: "bulleted_list_item", richText: linked(text) })),
     ];
   } catch (err) {
     stepError = err instanceof Error ? err : new Error(String(err));

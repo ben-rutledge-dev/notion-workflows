@@ -4,7 +4,7 @@ Group by what makes sense: tickets opened, closed, moved between states, and any
 
 Rules:
 - Aim for no more than 8 bullets, even on a busy day.
-- Each bullet is one short line of plain text. Refer to tickets by number, adding a few words of title only where it helps.
+- Each bullet is one short line of plain text. Refer to tickets by number only, like "#1234", and never include their titles. Titles and links are added automatically after each number.
 - Be concise, because this is read out loud in a standup.
 - Only mention work that appears in the activity below.
 - I've already written some lines myself, listed under "Already written". Leave out anything they already cover, even if worded differently. If they cover everything, return an empty list.
